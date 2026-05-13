@@ -20,23 +20,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 BINARIES_DIR = REPO_ROOT / "pyproot" / "binaries"
 
-# (url, sha256_or_None)
-PROOT_VERSION = "v5.4.0"
+# Resmi proot indirme URL'leri.
+# Kaynak: https://proot.gitlab.io/proot/bin/
+PROOT_VERSION = "latest"
 DOWNLOADS: dict[str, tuple[str, str | None]] = {
     "x86_64": (
-        f"https://github.com/proot-me/proot/releases/download/{PROOT_VERSION}/proot-{PROOT_VERSION}-x86_64-static",
+        "https://proot.gitlab.io/proot/bin/proot",
         None,
     ),
     "aarch64": (
-        f"https://github.com/proot-me/proot/releases/download/{PROOT_VERSION}/proot-{PROOT_VERSION}-aarch64-static",
+        "https://proot.gitlab.io/proot/bin/proot-arm64",
         None,
     ),
     "armv7l": (
-        f"https://github.com/proot-me/proot/releases/download/{PROOT_VERSION}/proot-{PROOT_VERSION}-armv7l-static",
-        None,
-    ),
-    "i386": (
-        f"https://github.com/proot-me/proot/releases/download/{PROOT_VERSION}/proot-{PROOT_VERSION}-i386-static",
+        "https://proot.gitlab.io/proot/bin/proot-arm",
         None,
     ),
 }
