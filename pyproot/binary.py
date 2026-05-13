@@ -36,20 +36,20 @@ _ARCH_MAP = {
     "i686": "i386",
 }
 
-# Latest stable proot release download URLs.
+# Resmi proot indirme URL'leri.
+# Kaynak: https://proot.gitlab.io/proot/bin/
 # Keys are (os, arch) tuples.  Values are (url, sha256).
-# Update these when new proot releases are published.
 _DOWNLOAD_URLS = {
     ("linux", "x86_64"): (
-        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86_64-static",
-        None,  # sha256 — fill in when pinning a release
+        "https://proot.gitlab.io/proot/bin/proot",
+        None,
     ),
     ("linux", "aarch64"): (
-        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-aarch64-static",
+        "https://proot.gitlab.io/proot/bin/proot-arm64",
         None,
     ),
     ("linux", "armv7l"): (
-        "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-armv7l-static",
+        "https://proot.gitlab.io/proot/bin/proot-arm",
         None,
     ),
 }
