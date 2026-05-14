@@ -27,19 +27,18 @@ logger = logging.getLogger(__name__)
 
 _ARCH_MAP = {
     "x86_64": "x86_64",
-    "amd64": "x86_64",
+    "amd64":  "x86_64",
     "aarch64": "aarch64",
-    "arm64": "aarch64",
+    "arm64":  "aarch64",
     "armv7l": "armv7l",
     "armv6l": "armv6l",
-    "i386": "i386",
-    "i686": "i386",
+    "i386":   "i386",
+    "i686":   "i386",
+    "x86":    "x86",
 }
 
-# Resmi proot indirme URL'leri.
-# Kaynak: https://proot.gitlab.io/proot/bin/
-# Keys are (os, arch) tuples.  Values are (url, sha256).
-_DOWNLOAD_URLS = {
+# Desktop/Linux — proot.gitlab.io
+_DESKTOP_URLS: dict[tuple[str, str], tuple[str, str | None]] = {
     ("linux", "x86_64"): (
         "https://proot.gitlab.io/proot/bin/proot",
         None,
@@ -54,6 +53,26 @@ _DOWNLOAD_URLS = {
     ),
 }
 
+# Android/Mobile — skirsten (Termux-based)
+_ANDROID_URLS: dict[tuple[str, str], tuple[str, str | None]] = {
+    ("linux", "x86_64"): (
+        "https://skirsten.github.io/proot-portable-android-binaries/x86_64/proot",
+        None,
+    ),
+    ("linux", "x86"): (
+        "https://skirsten.github.io/proot-portable-android-binaries/x86/proot",
+        None,
+    ),
+    ("linux", "aarch64"): (
+        "https://skirsten.github.io/proot-portable-android-binaries/aarch64/proot",
+        None,
+    ),
+    ("linux", "armv7l"): (
+        "https://skirsten.github.io/proot-portable-android-binaries/armv7/proot",
+        None,
+    ),
+}
+
 _BUNDLED_DIR = Path(__file__).parent / "binaries"
 _CACHE_DIR = Path.home() / ".cache" / "pyproot"
 
@@ -61,6 +80,15 @@ _CACHE_DIR = Path.home() / ".cache" / "pyproot"
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def is_android() -> bool:
+    """Detect whether we are running on an Android device."""
+    return (
+        os.path.exists("/system/build.prop")
+        or "ANDROID_ROOT" in os.environ
+        or "ANDROID_DATA" in os.environ
+    )
 
 
 def get_proot_binary(prefer_system: bool = False) -> Path:
@@ -91,7 +119,11 @@ def get_proot_binary(prefer_system: bool = False) -> Path:
         _assert_executable(p)
         return p
 
-    resolvers = [_bundled_binary, _system_binary] if not prefer_system else [_system_binary, _bundled_binary]
+    resolvers = (
+        [_bundled_binary, _system_binary]
+        if not prefer_system
+        else [_system_binary, _bundled_binary]
+    )
 
     for resolver in resolvers:
         try:
@@ -115,13 +147,18 @@ def get_proot_binary(prefer_system: bool = False) -> Path:
     return download_proot()
 
 
-def download_proot(dest_dir: Path | None = None, force: bool = False) -> Path:
+def download_proot(
+    dest_dir: Path | None = None,
+    force: bool = False,
+    android: bool | None = None,
+) -> Path:
     """
     Download the proot binary for the current platform and cache it.
 
     Args:
         dest_dir: Directory to save the binary (default: ``~/.cache/pyproot``).
         force:    Re-download even if a cached copy exists.
+        android:  Force Android binary selection. Auto-detected if None.
 
     Returns:
         Path to the downloaded binary.
@@ -133,19 +170,15 @@ def download_proot(dest_dir: Path | None = None, force: bool = False) -> Path:
     os_name, arch = _current_platform()
     key = (os_name, arch)
 
-    if key not in _DOWNLOAD_URLS:
-        raise ProotNotFoundError(
-            f"No proot download URL registered for platform {os_name}/{arch}. "
-            "Set PYPROOT_BINARY to the path of a proot binary, "
-            "or open an issue at https://github.com/yourname/pyproot."
-        )
+    use_android = is_android() if android is None else android
 
-    url, expected_sha256 = _DOWNLOAD_URLS[key]
+    # Pick URL — fall back to the other source if arch not found
+    url, expected_sha256 = _resolve_url(key, use_android)
+
     dest_dir = Path(dest_dir) if dest_dir else _CACHE_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    binary_name = f"proot-{arch}"
-    dest = dest_dir / binary_name
+    dest = dest_dir / f"proot-{arch}"
 
     if dest.exists() and not force:
         logger.debug("Using cached proot binary at %s", dest)
@@ -181,11 +214,14 @@ def download_proot(dest_dir: Path | None = None, force: bool = False) -> Path:
 def get_platform_info() -> dict:
     """Return a dict describing the current platform (for diagnostics)."""
     os_name, arch = _current_platform()
+    android = is_android()
     return {
         "os": os_name,
         "arch": arch,
         "machine": platform.machine(),
         "system": platform.system(),
+        "android": android,
+        "source": "android (skirsten)" if android else "desktop (proot.gitlab.io)",
         "bundled_binary": str(_bundled_binary() or "not found"),
         "system_binary": str(_system_binary() or "not found"),
         "cached_binary": str(_cached_binary() or "not found"),
@@ -202,6 +238,36 @@ def _current_platform() -> tuple[str, str]:
     raw_arch = platform.machine().lower()
     arch = _ARCH_MAP.get(raw_arch, raw_arch)
     return os_name, arch
+
+
+def _resolve_url(
+    key: tuple[str, str],
+    android: bool,
+) -> tuple[str, str | None]:
+    """
+    Resolve download URL for the given (os, arch) key.
+    Tries the preferred source first, falls back to the other.
+    """
+    primary = _ANDROID_URLS if android else _DESKTOP_URLS
+    fallback = _DESKTOP_URLS if android else _ANDROID_URLS
+
+    if key in primary:
+        return primary[key]
+
+    if key in fallback:
+        logger.warning(
+            "No %s URL for %s/%s, falling back to %s source.",
+            "android" if android else "desktop",
+            *key,
+            "desktop" if android else "android",
+        )
+        return fallback[key]
+
+    raise ProotNotFoundError(
+        f"No proot download URL registered for platform {key[0]}/{key[1]}. "
+        "Set PYPROOT_BINARY to the path of a proot binary, "
+        "or open an issue at https://github.com/yourname/pyproot."
+    )
 
 
 def _bundled_binary() -> Path | None:
@@ -233,7 +299,6 @@ def _assert_executable(path: Path) -> None:
     if not path.exists():
         raise ProotBinaryError(f"proot binary not found at {path}")
     if not os.access(path, os.X_OK):
-        # Try to fix permissions before giving up
         try:
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
         except OSError:
