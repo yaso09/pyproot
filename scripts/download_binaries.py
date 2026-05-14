@@ -4,10 +4,11 @@ Download proot static binaries for all supported architectures
 and place them in pyproot/binaries/ for bundling inside the wheel.
 
 Usage:
-    python scripts/download_binaries.py              # all arches
+    python scripts/download_binaries.py              # all arches (desktop + android)
     python scripts/download_binaries.py x86_64       # specific arch(es)
     python scripts/download_binaries.py --check      # verify existing files
-    python scripts/download_binaries.py --android    # use android binaries
+    python scripts/download_binaries.py --desktop    # desktop binaries only
+    python scripts/download_binaries.py --android    # android binaries only
 """
 
 import argparse
@@ -59,17 +60,8 @@ ANDROID_DOWNLOADS: dict[str, tuple[str, str | None]] = {
     ),
 }
 
-
-def is_android() -> bool:
-    return (
-        os.path.exists("/system/build.prop")
-        or "ANDROID_ROOT" in os.environ
-        or "ANDROID_DATA" in os.environ
-    )
-
-
-def get_downloads(android: bool = False) -> dict[str, tuple[str, str | None]]:
-    return ANDROID_DOWNLOADS if android else DESKTOP_DOWNLOADS
+# All unique arches across both sources
+ALL_ARCHES = sorted(set(DESKTOP_DOWNLOADS) | set(ANDROID_DOWNLOADS))
 
 
 def sha256(path: Path) -> str:
@@ -80,41 +72,26 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def download_arch(arch: str, force: bool = False, android: bool = False) -> Path | None:
-    downloads = get_downloads(android)
-
-    if arch not in downloads:
-        print(f"  [ERROR] No {'android' if android else 'desktop'} source for arch: {arch}", file=sys.stderr)
-        return None
-
-    url, expected = downloads[arch]
-    dest = BINARIES_DIR / f"proot-{arch}"
-
+def download_binary(arch: str, url: str, dest: Path, expected: str | None, force: bool, label: str) -> Path | None:
+    """Download a single binary from url to dest. Returns dest on success, None on failure."""
     if dest.exists() and not force:
         print(f"  [skip] {dest.name} already exists (use --force to re-download)")
         return dest
 
-    source_label = "android" if android else "desktop"
-    print(f"  [download] {arch} ({source_label}): {url}")
+    print(f"  [download] {arch} ({label}): {url}")
     tmp = dest.with_suffix(".tmp")
     try:
         urllib.request.urlretrieve(url, tmp)
     except Exception as exc:
         tmp.unlink(missing_ok=True)
-        print(f"  [ERROR] Failed to download {arch} ({source_label}): {exc}", file=sys.stderr)
-
-        # If desktop failed, fall back to android source (or vice versa)
-        if not android and arch in ANDROID_DOWNLOADS:
-            print(f"  [retry] Trying android source for {arch}...")
-            return download_arch(arch, force=force, android=True)
-
+        print(f"  [ERROR] Failed to download {arch} ({label}): {exc}", file=sys.stderr)
         return None
 
     if expected:
         actual = sha256(tmp)
         if actual != expected:
             tmp.unlink()
-            print(f"  [ERROR] SHA-256 mismatch for {arch}", file=sys.stderr)
+            print(f"  [ERROR] SHA-256 mismatch for {arch} ({label})", file=sys.stderr)
             print(f"          expected: {expected}", file=sys.stderr)
             print(f"          actual:   {actual}", file=sys.stderr)
             return None
@@ -125,22 +102,61 @@ def download_arch(arch: str, force: bool = False, android: bool = False) -> Path
     return dest
 
 
-def check_binaries(android: bool = False):
-    downloads = get_downloads(android)
-    print(f"Checking bundled binaries ({'android' if android else 'desktop'}):")
-    all_ok = True
-    for arch in downloads:
-        dest = BINARIES_DIR / f"proot-{arch}"
-        if dest.exists():
-            executable = os.access(dest, os.X_OK)
-            status = "ok" if executable else "NOT EXECUTABLE"
-            print(f"  {dest.name}: {dest.stat().st_size:,} bytes [{status}]")
-            if not executable:
-                all_ok = False
+def download_arch(arch: str, force: bool = False, desktop: bool = True, android: bool = True) -> bool:
+    """
+    Download binaries for a single arch from all requested sources.
+    Desktop binary  → proot-<arch>
+    Android binary  → proot-<arch>-android
+    Returns True if every requested source succeeded.
+    """
+    success = True
+
+    if desktop:
+        if arch in DESKTOP_DOWNLOADS:
+            url, expected = DESKTOP_DOWNLOADS[arch]
+            dest = BINARIES_DIR / f"proot-{arch}"
+            if not download_binary(arch, url, dest, expected, force, "desktop"):
+                success = False
         else:
-            print(f"  proot-{arch}: MISSING")
-            all_ok = False
+            print(f"  [skip] {arch}: no desktop source available")
+
+    if android:
+        if arch in ANDROID_DOWNLOADS:
+            url, expected = ANDROID_DOWNLOADS[arch]
+            dest = BINARIES_DIR / f"proot-{arch}-android"
+            if not download_binary(arch, url, dest, expected, force, "android"):
+                success = False
+        else:
+            print(f"  [skip] {arch}: no android source available")
+
+    return success
+
+
+def check_binaries(desktop: bool = True, android: bool = True):
+    print("Checking bundled binaries:")
+    all_ok = True
+
+    for arch in ALL_ARCHES:
+        if desktop and arch in DESKTOP_DOWNLOADS:
+            dest = BINARIES_DIR / f"proot-{arch}"
+            all_ok &= _check_file(dest)
+
+        if android and arch in ANDROID_DOWNLOADS:
+            dest = BINARIES_DIR / f"proot-{arch}-android"
+            all_ok &= _check_file(dest)
+
     return all_ok
+
+
+def _check_file(dest: Path) -> bool:
+    if dest.exists():
+        executable = os.access(dest, os.X_OK)
+        status = "ok" if executable else "NOT EXECUTABLE"
+        print(f"  {dest.name}: {dest.stat().st_size:,} bytes [{status}]")
+        return executable
+    else:
+        print(f"  {dest.name}: MISSING")
+        return False
 
 
 def main():
@@ -148,37 +164,40 @@ def main():
     parser.add_argument("arches", nargs="*", help="Architectures to download (default: all)")
     parser.add_argument("--force", action="store_true", help="Re-download even if exists")
     parser.add_argument("--check", action="store_true", help="Check existing binaries only")
-    parser.add_argument("--android", action="store_true",
-                        help="Use Android portable binaries (auto-detected if not set)")
+    parser.add_argument("--desktop", action="store_true", help="Download desktop binaries only")
+    parser.add_argument("--android", action="store_true", help="Download android binaries only")
     args = parser.parse_args()
 
-    # Auto-detect Android environment
-    use_android = args.android or is_android()
-    downloads = get_downloads(use_android)
-
-    if use_android and not args.android:
-        print("[*] Android environment detected, using Android binaries")
+    # If neither flag is set, download both
+    want_desktop = args.desktop or not args.android
+    want_android = args.android or not args.desktop
 
     BINARIES_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.check:
-        ok = check_binaries(use_android)
+        ok = check_binaries(desktop=want_desktop, android=want_android)
         sys.exit(0 if ok else 1)
 
-    arches = args.arches or list(downloads.keys())
-    invalid = [a for a in arches if a not in downloads]
+    arches = args.arches or ALL_ARCHES
+    invalid = [a for a in arches if a not in ALL_ARCHES]
     if invalid:
-        print(f"Unknown architectures: {invalid}. Valid: {list(downloads.keys())}", file=sys.stderr)
+        print(f"Unknown architectures: {invalid}. Valid: {ALL_ARCHES}", file=sys.stderr)
         sys.exit(1)
 
+    sources = []
+    if want_desktop:
+        sources.append("Desktop (proot.gitlab.io)")
+    if want_android:
+        sources.append("Android (skirsten)")
+
     print(f"Downloading proot {PROOT_VERSION} binaries to {BINARIES_DIR}/")
-    print(f"Source: {'Android (skirsten)' if use_android else 'Desktop (proot.gitlab.io)'}")
+    print(f"Sources: {', '.join(sources)}")
     print(f"Architectures: {arches}\n")
 
     success = []
     failed = []
     for arch in arches:
-        result = download_arch(arch, force=args.force, android=use_android)
+        result = download_arch(arch, force=args.force, desktop=want_desktop, android=want_android)
         (success if result else failed).append(arch)
 
     print(f"\nDone. {len(success)} succeeded, {len(failed)} failed.")
